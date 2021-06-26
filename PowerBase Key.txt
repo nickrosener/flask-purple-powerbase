@@ -1,0 +1,33 @@
+Bed MAC: D6:74:A7:CD:D8:B6
+
+Lower Vibrator:
+UUID: db801060-f324-29c3-38d1-85c0c2e86885
+Values: 0x00(Stop) - 0xff(Full)(Way too fast)
+Presets Vibrator Speeds (04,08)
+
+Upper Vibrator:
+UUID: db801061-f324-29c3-38d1-85c0c2e86885
+Values: 0x00(Stop) - 0xff(Full)(Way too fast)
+Presets Vibrator Speeds (10,14,18,1c)
+
+Light:
+UUID: db8010A0-f324-29c3-38d1-85c0c2e86885
+Values: 0x00(Off) - 0x64(On)
+
+Lower Lift: 
+UUID: db801042-f324-29c3-38d1-85c0c2e86885
+Values: 0x00(Down) - 0x64(Up)
+
+Upper Lift: 
+UUID: db801041-f324-29c3-38d1-85c0c2e86885
+Values: 0x00(Down) - 0x64(Up)
+
+Zero G Mode:
+UUID: db801041-f324-29c3-38d1-85c0c2e86885
+Values: 0x1f
+UUID: db801042-f324-29c3-38d1-85c0c2e86885
+Values: 0x46
+
+No Snore Mode:
+UUID: db801041-f324-29c3-38d1-85c0c2e86885
+Values: 0x0b
