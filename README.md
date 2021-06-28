@@ -6,6 +6,8 @@ and I will review it as time permits.
 
 This Flask API is designed to work with the Homebridge plugin [here](https://github.com/jbyerline/homebridge-purple-powerbase).
 
+### THIS API SHOULD BE ON A SEPARATE DEVICE FROM YOUR HOMEBRIDGE DEVICE AND IN CLOSE PROXIMITY TO YOUR BED!!! (Less than 10ft)
+
 The tutorial begins here: 
 
 Please note, this has been tested on a RPI 0W and a RPI 4. The PI needs to have Bluetooth 4.0 Low Energy which to my
