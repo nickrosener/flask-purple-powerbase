@@ -74,6 +74,10 @@ Change directories to flask-purple-powerbase
 ``` 
     cd flask-purple-powerbase
 ```
+Make the python script executable
+``` 
+    sudo chmod 777 app.py
+```
 
 ### Step 6
 Find your Bed's Bluetooth MAC address. This will be needed for the Raspberry Pi (RPI) to be able to connect to the
