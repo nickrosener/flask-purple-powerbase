@@ -1,8 +1,8 @@
 # flask-purple-powerbase
 
-This is a Python3 Flask server implementation for a Reverie/Purple Powerbase. This has been created by myself (@jbyerline) 
-and you are free to use this code and adapt however you may like. Feel free to fork or put up a PR if you feel so inclined 
-and I will review it as time permits.
+This is a Python3 Flask server implementation for a Reverie/Purple Powerbase. This has been created by myself 
+[@jbyerline](https://github.com/jbyerline/) and you are free to use this code and adapt however you may like. 
+Feel free to fork or put up a PR if you feel so inclined, and I will review it as time permits.
 
 This Flask API is designed to work with the Homebridge plugin [here](https://github.com/jbyerline/homebridge-purple-powerbase).
 
@@ -16,7 +16,7 @@ _________________________________________
 ## Prerequisite
 This guide assumes that you already have the following set up: 
 
-- A Raspberry Pi 0 W (MUST be a W) or a Raspberry Pi 4 with Raspian
+- A Raspberry Pi 0 W (MUST be a W) or a Raspberry Pi 4 with Raspbian
 - SSH enabled for ease of setup (not required if you're a fan of typing)
 - Some knowledge of local networking
 
@@ -92,7 +92,7 @@ This will produce a long list of bluetooth devices near you as well as their MAC
 address exactly as is.
 
 Note: it is important that there are no other bluetooth devices connected to your bed when you do this scan,
-IE. the Purple or Reverie apps. Once the app has found your bed. Connect to is and write down the
+IE. the Purple or Reverie apps.
 
 ### Step 7
 Edit app.py to include your MAC address and IP address
