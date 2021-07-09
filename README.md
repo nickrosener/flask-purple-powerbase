@@ -104,6 +104,7 @@ Edit app.py to include your MAC address and IP address
    nano app.py
 ```
 Edit the two lines below to be your MAC and IP addresses we noted earlier
+Note: This is the Bluetooth MAC address from the step above. NOT the RPIs WiFi MAC Address
 ``` 
     #TODO: You WILL need to change the mac address below to be the address of your bed's bluetooth module
     DEVICE_MAC = "XX:XX:XX:XX:XX:XX"
