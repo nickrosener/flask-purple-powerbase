@@ -68,6 +68,10 @@ Change directories to home
 ``` 
     cd
 ```
+Install git
+```
+    sudo apt install git -y
+```
 Clone this repo:
 ``` 
     git clone https://github.com/jbyerline/flask-purple-powerbase.git
