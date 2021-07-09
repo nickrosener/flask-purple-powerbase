@@ -92,7 +92,7 @@ bed.
    sudo hcitool lescan
 ```
 This will produce a long list of bluetooth devices near you as well as their MAC addresses. Mine was titled
-"RevCB_C1". Once you see one with probably a similar name, hit ctrl+c to stop the scan. Write down your MAC 
+"RevCB_C1". Once you see one with probably a similar name, hit ctrl+c to stop the scan after about 30 seconds. Scroll through the list and write down your MAC 
 address exactly as is.
 
 Note: it is important that there are no other bluetooth devices connected to your bed when you do this scan,
