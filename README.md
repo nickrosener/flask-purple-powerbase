@@ -118,7 +118,7 @@ Install python pip3
 ``` 
    sudo apt-get -y install python3-pip
 ```
-Verify python pip3 installation
+Verify python pip3 installation (this step may take a min or so on a RPI 0)
 ``` 
    pip3 --version
 ```
