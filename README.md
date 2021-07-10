@@ -150,20 +150,21 @@ This will send it back to flat:
 ```
    http://[yourLocalIP]:8000/moveUpper/0
 ```
+Then hit ctrl+c to stop the python program
 
-### Step 11
+### Step 12
 Configure autostart of the API on boot:
 ```
-   sudo nano /etc/rc.local
+    sudo nano /etc/rc.local
 ```
 
 insert the line immediately before the exit 0 line
 ```
-   sudo python3 /home/pi/flask-purple-powerbase/app.py &> /home/pi/log.txt 2>&1
+sudo python3 /home/pi/flask-purple-powerbase/app.py &> /home/pi/log.txt 2>&1
 ```
 Hit ctrl+x then y then enter to save
 
-### Step 12
+### Step 13
 Use your API. 
 ```
    sudo reboot
