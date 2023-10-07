@@ -1,8 +1,10 @@
 from flask import Flask
+from flask_cors import CORS
 from bluepy import btle
 import RPi.GPIO as GPIO
 import sys
 import time
+
 # TODO: You WILL need to change the mac address below to be the address of your bed's bluetooth module
 DEVICE_MAC = "D6:74:A7:CD:D8:B6"
 # TODO: You WILL need to change the Local IP address below to be the address of your RPI
@@ -29,6 +31,7 @@ GPIO.setmode(GPIO.BCM)
 GPIO.setup(GPIO_PIN, GPIO.OUT)
 
 app = Flask(__name__)
+CORS(app)
 
 
 @app.route('/')
@@ -154,14 +157,16 @@ def turnLightOff():
     subService.write(bytes.fromhex("00"))
     return 'off'
 
+
 @app.route("/light/status")
 def readLightStatus():
     subService1 = service.getCharacteristics()[UUID_DICT["light"]]
     decval = int.from_bytes(subService1.read(), byteorder=sys.byteorder)
-    if(decval == 0):
+    if (decval == 0):
         return '0'
     else:
         return '1'
+
 
 @app.route("/GPIOlight/on")
 def turnGPIOLightOn():
@@ -174,13 +179,15 @@ def turnGPIOLightOff():
     GPIO.output(GPIO_PIN, GPIO.LOW)
     return 'off'
 
+
 @app.route("/GPIOlight/status")
 def readGPIOLightStatus():
     lightStatus = GPIO.input(GPIO_PIN)
-    if(lightStatus == 0):
+    if (lightStatus == 0):
         return '0'
     else:
         return '1'
+
 
 if __name__ == '__main__':
     app.run(host=RPI_LOCAL_IP, port=8000, debug=False)
