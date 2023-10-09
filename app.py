@@ -190,12 +190,26 @@ def set_stop():
 def set_flat():
     logger.info("Received request to set flat")
 
-    # First action
-    success1 = write_bluetooth("zero g", "00", index=1)
-    time.sleep(22)  # Sleep between commands if needed
+    # Get the current positions of the bed
+    upper_decval = read_bluetooth("upper lift")
+    lower_decval = read_bluetooth("lower lift")
 
-    # Second action
-    success2 = write_bluetooth("zero g", "00", index=0)
+    if upper_decval is None or lower_decval is None:
+        response = {"status": "error", "message": "Failed to get current bed positions"}
+        return jsonify(response), 500
+
+    # Setting upper and lower both to 0
+    hexval = hex(0)[2:].zfill(2)
+
+    # Set the upper part to flat
+    success1 = write_bluetooth("upper lift", hexval,
+                               initial_percentage=upper_decval,
+                               target_percentage=0)
+
+    # Set the lower part to flat
+    success2 = write_bluetooth("lower lift", hexval,
+                               initial_percentage=lower_decval,
+                               target_percentage=0)
 
     if success1 and success2:
         response = {"status": "success", "message": "Flat set successfully"}
@@ -209,12 +223,23 @@ def set_flat():
 def set_zero_g():
     logger.info("Received request to set zero G")
 
-    # First action
-    success1 = write_bluetooth("zero g", "1f", index=1)
-    time.sleep(1)  # Sleep between commands if needed
+    # Get the current positions of the bed
+    upper_decval = read_bluetooth("upper lift")
+    lower_decval = read_bluetooth("lower lift")
 
-    # Second action
-    success2 = write_bluetooth("zero g", "46", index=0)
+    if upper_decval is None or lower_decval is None:
+        response = {"status": "error", "message": "Failed to get current bed positions"}
+        return jsonify(response), 500
+
+    # Set the upper part to flat
+    success1 = write_bluetooth("upper lift", "46",
+                               initial_percentage=upper_decval,
+                               target_percentage=0)
+
+    # Set the lower part to flat
+    success2 = write_bluetooth("lower lift", "1f",
+                               initial_percentage=lower_decval,
+                               target_percentage=0)
 
     if success1 and success2:
         response = {"status": "success", "message": "Zero G set successfully"}
@@ -226,13 +251,21 @@ def set_zero_g():
 
 @app.route("/noSnore")
 def no_snore():
-    logger.info("Received request to set no snore")
+    logger.info("Received request to set no snore (11%)")
 
-    # Action to set no snore
-    success = write_bluetooth("no snore", "0b")
+    # Get the current position of the bed
+    decval = read_bluetooth("upper lift")
+    logger.debug("Current upper height: " + str(decval))
+    if decval is None:
+        response = {"status": "error", "message": "Failed to get current upper height"}
+        return jsonify(response), 500
+
+    # Write to Bluetooth with initial and target percentages
+    success = write_bluetooth("upper lift", "0b", initial_percentage=decval,
+                              target_percentage=11)
 
     if success:
-        response = {"status": "success", "message": "No snore set successfully"}
+        response = {"status": "success", "message": f"No snore set successfully"}
         return jsonify(response), 200
     else:
         response = {"status": "error", "message": "Failed to set no snore"}
@@ -258,7 +291,7 @@ def move_upper(percentage):
 
     # Get the current position of the bed
     decval = read_bluetooth("upper lift")
-    print("Current upper height: " + str(decval))
+    logger.debug("Current upper height: " + str(decval))
     if decval is None:
         response = {"status": "error", "message": "Failed to get current upper height"}
         return jsonify(response), 500
@@ -305,7 +338,17 @@ def move_lower(percentage):
 
     # Convert percentage to hex value and write to Bluetooth characteristic
     hexval = hex(percentage_int)[2:].zfill(2)
-    success = write_bluetooth("lower lift", hexval)
+
+    # Get the current position of the bed
+    decval = read_bluetooth("lower lift")
+    logger.debug("Current lower height: " + str(decval))
+    if decval is None:
+        response = {"status": "error", "message": "Failed to get current lower height"}
+        return jsonify(response), 500
+
+    # Write to Bluetooth with initial and target percentages
+    success = write_bluetooth("lower lift", hexval, initial_percentage=decval,
+                              target_percentage=percentage_int)
 
     if success:
         response = {"status": "success", "message": f"Moved lower to {percentage}%"}
@@ -313,6 +356,7 @@ def move_lower(percentage):
     else:
         response = {"status": "error", "message": "Failed to move lower"}
         return jsonify(response), 500
+
 
 
 @app.route("/getLowerHeight")
