@@ -1,4 +1,5 @@
 import logging
+import math
 
 # Constants
 DEVICE_MAC = "D6:74:A7:CD:D8:B6"
@@ -98,7 +99,7 @@ def write_bluetooth(characteristic_name, hex_value, index=None, initial_percenta
 
                 # Wait for the estimated time only for movement characteristics
                 if characteristic_name in MOVEMENT_CHARACTERISTICS:
-                    logger.info(f"Waiting for {estimated_time} seconds for the bed to reach the position...")
+                    logger.info(f"Waiting for {math.ceil(estimated_time)} seconds for the bed to reach the position...")
                     time.sleep(estimated_time)
 
                 return True
