@@ -39,7 +39,7 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 # Apply the filter to Flask's Werkzeug logger
-logging.getLogger('werkzeug').addFilter(IgnoreFlaskLog())
+logger.addFilter(IgnoreFlaskLog())
 
 
 # Function to connect to Bluetooth
