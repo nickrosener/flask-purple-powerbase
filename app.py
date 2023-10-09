@@ -41,6 +41,10 @@ from bluepy import btle
 import RPi.GPIO as GPIO
 import sys
 import time
+import threading
+
+# Create a lock for Bluetooth communication
+bluetooth_lock = threading.Lock()
 
 # Function to connect to Bluetooth
 def connect_bluetooth():
@@ -65,29 +69,30 @@ def write_bluetooth(characteristic_name, hex_value, index=None):
     """A helper function to write to a Bluetooth characteristic and handle potential issues."""
     global dev, service  # ensure that you are using the global variables
 
-    for _ in range(MAX_RETRIES):
-        try:
-            if index is not None:
-                characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name][index]]
-            else:
-                characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name]]
+    with bluetooth_lock:  # Add this line to acquire the lock
+        for _ in range(MAX_RETRIES):
+            try:
+                if index is not None:
+                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name][index]]
+                else:
+                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name]]
 
-            characteristic.write(bytes.fromhex(hex_value))
-            logger.info(f"Wrote {hex_value} to {characteristic_name} (index: {index})")
-            return True
-        except btle.BTLEException as e:
-            logger.warning(f"Failed to write {hex_value} to {characteristic_name} (index: {index}): {str(e)}")
-            logger.info("Attempting to reconnect to Bluetooth device...")
-            dev, service = connect_bluetooth()  # Attempting reconnection
-        except KeyError:
-            logger.error(f"Characteristic {characteristic_name} not found in UUID_DICT")
-            return False
-        except IndexError:
-            logger.error(f"Index {index} out of range for {characteristic_name}")
-            return False
-        except Exception as e:
-            logger.error(f"An unexpected error occurred: {str(e)}")
-            return False
+                characteristic.write(bytes.fromhex(hex_value))
+                logger.info(f"Wrote {hex_value} to {characteristic_name} (index: {index})")
+                return True
+            except btle.BTLEException as e:
+                logger.warning(f"Failed to write {hex_value} to {characteristic_name} (index: {index}): {str(e)}")
+                logger.info("Attempting to reconnect to Bluetooth device...")
+                dev, service = connect_bluetooth()  # Attempting reconnection
+            except KeyError:
+                logger.error(f"Characteristic {characteristic_name} not found in UUID_DICT")
+                return False
+            except IndexError:
+                logger.error(f"Index {index} out of range for {characteristic_name}")
+                return False
+            except Exception as e:
+                logger.error(f"An unexpected error occurred: {str(e)}")
+                return False
 
     logger.error(f"Unable to write to Bluetooth device after {MAX_RETRIES} attempts.")
     return False
@@ -97,29 +102,30 @@ def read_bluetooth(characteristic_name, index=None):
     """A helper function to read a Bluetooth characteristic and handle potential issues."""
     global dev, service  # Ensure that you are using the global variables
 
-    for _ in range(MAX_RETRIES):
-        try:
-            if index is not None:
-                characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name][index]]
-            else:
-                characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name]]
+    with bluetooth_lock:  # Add this line to acquire the lock
+        for _ in range(MAX_RETRIES):
+            try:
+                if index is not None:
+                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name][index]]
+                else:
+                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name]]
 
-            decval = int.from_bytes(characteristic.read(), byteorder=sys.byteorder)
-            logger.info(f"Read value {decval} from {characteristic_name} (index: {index})")
-            return decval
-        except btle.BTLEException as e:
-            logger.warning(f"Failed to read from {characteristic_name} (index: {index}): {str(e)}")
-            logger.info("Attempting to reconnect to Bluetooth device...")
-            dev, service = connect_bluetooth()  # Attempting reconnection
-        except KeyError:
-            logger.error(f"Characteristic {characteristic_name} not found in UUID_DICT")
-            return None
-        except IndexError:
-            logger.error(f"Index {index} out of range for {characteristic_name}")
-            return None
-        except Exception as e:
-            logger.error(f"An unexpected error occurred: {str(e)}")
-            return None
+                decval = int.from_bytes(characteristic.read(), byteorder=sys.byteorder)
+                logger.info(f"Read value {decval} from {characteristic_name} (index: {index})")
+                return decval
+            except btle.BTLEException as e:
+                logger.warning(f"Failed to read from {characteristic_name} (index: {index}): {str(e)}")
+                logger.info("Attempting to reconnect to Bluetooth device...")
+                dev, service = connect_bluetooth()  # Attempting reconnection
+            except KeyError:
+                logger.error(f"Characteristic {characteristic_name} not found in UUID_DICT")
+                return None
+            except IndexError:
+                logger.error(f"Index {index} out of range for {characteristic_name}")
+                return None
+            except Exception as e:
+                logger.error(f"An unexpected error occurred: {str(e)}")
+                return None
 
     logger.error(f"Unable to read from Bluetooth device after {MAX_RETRIES} attempts.")
     return None
