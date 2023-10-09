@@ -24,12 +24,22 @@ UUID_DICT = {
     "no snore": 5  # db801041-f324-29c3-38d1-85c0c2e86885
 }
 
+
+class IgnoreFlaskLog(logging.Filter):
+    def filter(self, record):
+        # Ignore "GET / HTTP/1.1" 200 messages
+        return not (record.levelno == logging.INFO and record.getMessage().startswith("GET / HTTP/1.1"))
+
+
 # Logging setup
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler("logfile.log"),
                               logging.StreamHandler()])
 logger = logging.getLogger(__name__)
+
+# Apply the filter to Flask's Werkzeug logger
+logging.getLogger('werkzeug').addFilter(IgnoreFlaskLog())
 
 
 # Function to connect to Bluetooth
