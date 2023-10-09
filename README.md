@@ -155,17 +155,17 @@ Then hit ctrl+c to stop the python program
 ### Step 12
 Configure autostart of the API on boot:
 ```
-    sudo nano /etc/rc.local
+    sudo crontab -e
 ```
 
-insert the line immediately before the exit 0 line
+insert this line at the bottom
 ```
-sudo python3 /home/pi/flask-purple-powerbase/app.py &> /home/pi/log.txt 2>&1
+@reboot /usr/bin/python3 /home/pi/flask-purple-powerbase/app.py >> /home/pi/flask-purple-powerbase/log.txt 2>&1
 ```
 Hit ctrl+x then y then enter to save
 
 ### Step 13
-Use your API. 
+Reboot the PI and then use your API. 
 ```
    sudo reboot
 ```
