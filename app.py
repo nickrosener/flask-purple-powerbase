@@ -1,11 +1,4 @@
 import logging
-from flask import Flask
-from flask_cors import CORS
-from flask import jsonify
-from bluepy import btle
-import RPi.GPIO as GPIO
-import sys
-import time
 
 # Constants
 DEVICE_MAC = "D6:74:A7:CD:D8:B6"
@@ -39,8 +32,15 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 # Apply the filter to Flask's Werkzeug logger
-logger.addFilter(IgnoreFlaskLog())
+logging.getLogger("werkzeug").addFilter(IgnoreFlaskLog())
 
+from flask import Flask
+from flask_cors import CORS
+from flask import jsonify
+from bluepy import btle
+import RPi.GPIO as GPIO
+import sys
+import time
 
 # Function to connect to Bluetooth
 def connect_bluetooth():
