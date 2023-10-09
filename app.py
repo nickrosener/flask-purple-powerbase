@@ -65,11 +65,27 @@ def connect_bluetooth():
 dev, service = connect_bluetooth()
 
 
-def write_bluetooth(characteristic_name, hex_value, index=None):
-    """A helper function to write to a Bluetooth characteristic and handle potential issues."""
+def write_bluetooth(characteristic_name, hex_value, index=None, initial_percentage=0, target_percentage=100):
+    """
+    A helper function to write to a Bluetooth characteristic and handle potential issues.
+
+    Parameters:
+        characteristic_name (str): The name of the characteristic.
+        hex_value (str): The hex value to write.
+        index (int, optional): Index for characteristics. Defaults to None.
+        initial_percentage (int): Initial position of the bed (0-100). Defaults to 0.
+        target_percentage (int): Target position of the bed (0-100). Defaults to 100.
+    """
     global dev, service  # ensure that you are using the global variables
 
-    with bluetooth_lock:  # Add this line to acquire the lock
+    # Calculate estimated time to move the bed
+    MAX_TIME_TO_MOVE = 30  # max time to move bed from 0 to 100%
+    estimated_time = abs(target_percentage - initial_percentage) / 100.0 * MAX_TIME_TO_MOVE
+
+    # Characteristics that require waiting for movement to complete
+    MOVEMENT_CHARACTERISTICS = ["upper lift", "lower lift"]
+
+    with bluetooth_lock:  # Acquire the lock
         for _ in range(MAX_RETRIES):
             try:
                 if index is not None:
@@ -79,6 +95,12 @@ def write_bluetooth(characteristic_name, hex_value, index=None):
 
                 characteristic.write(bytes.fromhex(hex_value))
                 logger.info(f"Wrote {hex_value} to {characteristic_name} (index: {index})")
+
+                # Wait for the estimated time only for movement characteristics
+                if characteristic_name in MOVEMENT_CHARACTERISTICS:
+                    logger.info(f"Waiting for {estimated_time} seconds for the bed to reach the position...")
+                    time.sleep(estimated_time)
+
                 return True
             except btle.BTLEException as e:
                 logger.warning(f"Failed to write {hex_value} to {characteristic_name} (index: {index}): {str(e)}")
@@ -94,8 +116,8 @@ def write_bluetooth(characteristic_name, hex_value, index=None):
                 logger.error(f"An unexpected error occurred: {str(e)}")
                 return False
 
-    logger.error(f"Unable to write to Bluetooth device after {MAX_RETRIES} attempts.")
-    return False
+        logger.error(f"Unable to write to Bluetooth device after {MAX_RETRIES} attempts.")
+        return False
 
 
 def read_bluetooth(characteristic_name, index=None):
@@ -233,7 +255,17 @@ def move_upper(percentage):
 
     # Convert percentage to hex value and write to Bluetooth characteristic
     hexval = hex(percentage_int)[2:].zfill(2)
-    success = write_bluetooth("upper lift", hexval)
+
+    # Get the current position of the bed
+    decval = read_bluetooth("upper lift")
+    logger.info("Current upper height: " + str(decval))
+    if decval is None:
+        response = {"status": "error", "message": "Failed to get current upper height"}
+        return jsonify(response), 500
+
+    # Write to Bluetooth with initial and target percentages
+    success = write_bluetooth("upper lift", hexval, initial_percentage=decval,
+                              target_percentage=percentage_int)
 
     if success:
         response = {"status": "success", "message": f"Moved upper to {percentage}%"}
