@@ -28,7 +28,7 @@ UUID_DICT = {
 class IgnoreFlaskLog(logging.Filter):
     def filter(self, record):
         # Ignore "GET / HTTP/1.1" 200 messages
-        return not (record.levelno == logging.INFO and record.getMessage().startswith("GET / HTTP/1.1"))
+        return not ("GET / HTTP/1.1" in record.getMessage())
 
 
 # Logging setup
