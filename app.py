@@ -258,7 +258,7 @@ def move_upper(percentage):
 
     # Get the current position of the bed
     decval = read_bluetooth("upper lift")
-    logger.info("Current upper height: " + str(decval))
+    print("Current upper height: " + str(decval))
     if decval is None:
         response = {"status": "error", "message": "Failed to get current upper height"}
         return jsonify(response), 500
