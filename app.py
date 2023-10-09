@@ -166,7 +166,6 @@ CORS(app)
 # Flask routes
 @app.route('/')
 def hello_world():
-    logger.info("Received request for root endpoint")
     return 'This is my bed controller'
 
 
