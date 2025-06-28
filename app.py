@@ -13,8 +13,9 @@ from flask_cors import CORS  # type: ignore[import]
 from RPi import GPIO  # type: ignore[import]
 
 # Constants
-DEVICE_MAC = "D6:74:A7:CD:D8:B6"
+DEVICE_MAC = "F8:68:CE:13:C3:DF"
 RPI_LOCAL_IP = "10.0.0.75"
+BINDING_IP = "0.0.0.0"  # noqa: S104
 DEVICE_UUID = "db801000-f324-29c3-38d1-85c0c2e86885"
 MAX_RETRIES = 5
 RETRY_DELAY = 5  # in seconds
@@ -73,15 +74,14 @@ def connect_bluetooth() -> tuple:
         If unable to connect to the Bluetooth device after MAX_RETRIES attempts.
 
     """
-    for _ in range(MAX_RETRIES):
+    for attempt in range(1, MAX_RETRIES + 1):
+        logger.debug("Bluetooth connection attempt %d/%d", attempt, MAX_RETRIES)
         try:
             dev = btle.Peripheral(DEVICE_MAC, "random")
+            logger.info("Connected to Bluetooth device: %s", DEVICE_MAC)
             service = dev.getServiceByUUID(DEVICE_UUID)
-            logger.info(
-                "Connected to Bluetooth device: %s",
-                DEVICE_MAC,
-            )
-        except btle.BTLEException as e:  # noqa: PERF203
+            logger.info("Obtained service with UUID: %s", DEVICE_UUID)
+        except btle.BTLEException as e:
             logger.warning("Failed to connect to Bluetooth device. Retrying...: %r", e)
             time.sleep(RETRY_DELAY)
         else:
@@ -158,7 +158,7 @@ def write_bluetooth(
                     time.sleep(estimated_time)
 
                 return True  # noqa: TRY300
-            except btle.BTLEException as e:  # noqa: PERF203
+            except btle.BTLEException as e:
                 logger.warning(
                     "Failed to write %s to %s (index: %s): %r",
                     hex_value, characteristic_name, index, e,
@@ -211,7 +211,7 @@ def read_bluetooth(characteristic_name: str, index: int | None = None) -> int | 
                     decval, characteristic_name, index,
                 )
                 return decval  # noqa: TRY300
-            except btle.BTLEException as e:  # noqa: PERF203
+            except btle.BTLEException as e:
                 logger.warning(
                     "Failed to read from %s (index: %s): %r",
                     characteristic_name, index, e,
@@ -800,7 +800,7 @@ def read_gpio_light_status() -> tuple:
 
 if __name__ == "__main__":
     try:
-        app.run(host=RPI_LOCAL_IP, port=8000, debug=False)
+        app.run(host=BINDING_IP, port=8000, debug=False)
     except KeyboardInterrupt:
         logger.info("Gracefully shutting down due to manual interruption...")
     except Exception as e:  # noqa: BLE001
