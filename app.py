@@ -1,5 +1,16 @@
+"""A Flask application to control a Bluetooth-enabled adjustable bed and GPIO light."""
+from __future__ import annotations
+
 import logging
 import math
+import sys
+import threading
+import time
+
+from bluepy import btle  # type: ignore[import]
+from flask import Flask, jsonify  # type: ignore[import]
+from flask_cors import CORS  # type: ignore[import]
+from RPi import GPIO  # type: ignore[import]
 
 # Constants
 DEVICE_MAC = "D6:74:A7:CD:D8:B6"
@@ -14,51 +25,71 @@ UUID_DICT = {
     "lower lift": 6,  # db801042-f324-29c3-38d1-85c0c2e86885
     "upper lift": 5,  # db801041-f324-29c3-38d1-85c0c2e86885
     "light": 14,  # db8010A0-f324-29c3-38d1-85c0c2e86885
-    "zero g": [5, 6],  # db801041-f324-29c3-38d1-85c0c2e86885, db801042-f324-29c3-38d1-85c0c2e86885
-    "no snore": 5  # db801041-f324-29c3-38d1-85c0c2e86885
+    "zero g": [
+        5,
+        6,
+    ],  # db801041-f324-29c3-38d1-85c0c2e86885, db801042-f324-29c3-38d1-85c0c2e86885
+    "no snore": 5,  # db801041-f324-29c3-38d1-85c0c2e86885
 }
 
 
 class IgnoreFlaskLog(logging.Filter):
-    def filter(self, record):
+    """A logging filter to ignore specific Flask log messages."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Filter out specific log messages."""
         # Ignore "GET / HTTP/1.1" 200 messages
-        return not ("GET / HTTP/1.1" in record.getMessage())
+        return "GET / HTTP/1.1" not in record.getMessage()
 
 
 # Logging setup
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s',
-                    handlers=[logging.FileHandler("logfile.log"),
-                              logging.StreamHandler()])
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler("logfile.log"), logging.StreamHandler()],
+)
 logger = logging.getLogger(__name__)
 
 # Apply the filter to Flask's Werkzeug logger
 logging.getLogger("werkzeug").addFilter(IgnoreFlaskLog())
 
-from flask import Flask
-from flask_cors import CORS
-from flask import jsonify
-from bluepy import btle
-import RPi.GPIO as GPIO
-import sys
-import time
-import threading
 
 # Create a lock for Bluetooth communication
 bluetooth_lock = threading.Lock()
 
+
 # Function to connect to Bluetooth
-def connect_bluetooth():
+def connect_bluetooth() -> tuple:
+    """Attempt to connect to the Bluetooth device and return device / service objects.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Bluetooth Peripheral device and its service.
+
+    Raises
+    ------
+    SystemExit
+        If unable to connect to the Bluetooth device after MAX_RETRIES attempts.
+
+    """
     for _ in range(MAX_RETRIES):
         try:
             dev = btle.Peripheral(DEVICE_MAC, "random")
             service = dev.getServiceByUUID(DEVICE_UUID)
-            logger.info(f"Connected to Bluetooth device: {DEVICE_MAC}")
-            return dev, service
-        except btle.BTLEException as e:
-            logger.warning(f"Failed to connect to Bluetooth device. Retrying...: {str(e)}")
+            logger.info(
+                "Connected to Bluetooth device: %s",
+                DEVICE_MAC,
+            )
+        except btle.BTLEException as e:  # noqa: PERF203
+            logger.warning("Failed to connect to Bluetooth device. Retrying...: %r", e)
             time.sleep(RETRY_DELAY)
-    logger.error(f"Unable to connect to Bluetooth device after {MAX_RETRIES} attempts.")
+        else:
+            return dev, service
+    logger.error(
+        "Unable to connect to Bluetooth device after %d attempts.",
+        MAX_RETRIES,
+    )
     sys.exit(1)
 
 
@@ -66,91 +97,141 @@ def connect_bluetooth():
 dev, service = connect_bluetooth()
 
 
-def write_bluetooth(characteristic_name, hex_value, index=None, initial_percentage=0, target_percentage=100):
-    """
-    A helper function to write to a Bluetooth characteristic and handle potential issues.
+def write_bluetooth(
+    characteristic_name: str,
+    hex_value: str,
+    index: int | None = None,
+    initial_percentage: int = 0,
+    target_percentage: int = 100,
+) -> bool:
+    """Write to a Bluetooth characteristic and handle potential issues.
 
-    Parameters:
-        characteristic_name (str): The name of the characteristic.
-        hex_value (str): The hex value to write.
-        index (int, optional): Index for characteristics. Defaults to None.
-        initial_percentage (int): Initial position of the bed (0-100). Defaults to 0.
-        target_percentage (int): Target position of the bed (0-100). Defaults to 100.
+    Parameters
+    ----------
+    characteristic_name : str
+        The name of the characteristic.
+    hex_value : str
+        The hex value to write.
+    index : int, optional
+        Index for characteristics. Defaults to None.
+    initial_percentage : int
+        Initial position of the bed (0-100). Defaults to 0.
+    target_percentage : int
+        Target position of the bed (0-100). Defaults to 100.
+
     """
     global dev, service  # ensure that you are using the global variables
 
     # Calculate estimated time to move the bed
-    MAX_TIME_TO_MOVE = 30  # max time to move bed from 0 to 100%
-    estimated_time = abs(target_percentage - initial_percentage) / 100.0 * MAX_TIME_TO_MOVE
+    max_time_to_move = 30  # max time to move bed from 0 to 100%
+    estimated_time = (
+        abs(target_percentage - initial_percentage) / 100.0 * max_time_to_move
+    )
 
     # Characteristics that require waiting for movement to complete
-    MOVEMENT_CHARACTERISTICS = ["upper lift", "lower lift"]
+    movement_characteristics = ["upper lift", "lower lift"]
 
     with bluetooth_lock:  # Acquire the lock
         for _ in range(MAX_RETRIES):
             try:
                 if index is not None:
-                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name][index]]
+                    characteristic = service.getCharacteristics()[
+                        UUID_DICT[characteristic_name][index]
+                    ]
                 else:
-                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name]]
+                    characteristic = service.getCharacteristics()[
+                        UUID_DICT[characteristic_name]
+                    ]
 
                 characteristic.write(bytes.fromhex(hex_value))
-                logger.info(f"Wrote {hex_value} to {characteristic_name} (index: {index})")
+                logger.info(
+                    "Wrote %s to %s (index: %s)",
+                    hex_value, characteristic_name, index,
+                )
 
                 # Wait for the estimated time only for movement characteristics
-                if characteristic_name in MOVEMENT_CHARACTERISTICS:
-                    logger.info(f"Waiting for {math.ceil(estimated_time)} seconds for the bed to reach the position...")
+                if characteristic_name in movement_characteristics:
+                    logger.info(
+                        "Waiting for %d seconds for the bed to reach the position...",
+                        math.ceil(estimated_time),
+                    )
                     time.sleep(estimated_time)
 
-                return True
-            except btle.BTLEException as e:
-                logger.warning(f"Failed to write {hex_value} to {characteristic_name} (index: {index}): {str(e)}")
+                return True  # noqa: TRY300
+            except btle.BTLEException as e:  # noqa: PERF203
+                logger.warning(
+                    "Failed to write %s to %s (index: %s): %r",
+                    hex_value, characteristic_name, index, e,
+                )
                 logger.info("Attempting to reconnect to Bluetooth device...")
                 dev, service = connect_bluetooth()  # Attempting reconnection
             except KeyError:
-                logger.error(f"Characteristic {characteristic_name} not found in UUID_DICT")
+                logger.exception(
+                    "Characteristic %s not found in UUID_DICT",
+                    characteristic_name,
+                )
                 return False
             except IndexError:
-                logger.error(f"Index {index} out of range for {characteristic_name}")
+                logger.exception(
+                    "Index %s out of range for %s",
+                    index,
+                    characteristic_name,
+                )
                 return False
             except Exception as e:
-                logger.error(f"An unexpected error occurred: {str(e)}")
+                logger.exception("An unexpected error occurred: %r", e)  # noqa: TRY401
                 return False
 
-        logger.error(f"Unable to write to Bluetooth device after {MAX_RETRIES} attempts.")
+        logger.error(
+            "Unable to write to Bluetooth device after %d attempts.",
+            MAX_RETRIES,
+        )
         return False
 
 
-def read_bluetooth(characteristic_name, index=None):
-    """A helper function to read a Bluetooth characteristic and handle potential issues."""
+def read_bluetooth(characteristic_name: str, index: int | None = None) -> int | None:
+    """Read a Bluetooth characteristic and handle potential issues."""
     global dev, service  # Ensure that you are using the global variables
 
     with bluetooth_lock:  # Add this line to acquire the lock
         for _ in range(MAX_RETRIES):
             try:
                 if index is not None:
-                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name][index]]
+                    characteristic = service.getCharacteristics()[
+                        UUID_DICT[characteristic_name][index]
+                    ]
                 else:
-                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name]]
+                    characteristic = service.getCharacteristics()[
+                        UUID_DICT[characteristic_name]
+                    ]
 
                 decval = int.from_bytes(characteristic.read(), byteorder=sys.byteorder)
-                logger.info(f"Read value {decval} from {characteristic_name} (index: {index})")
-                return decval
-            except btle.BTLEException as e:
-                logger.warning(f"Failed to read from {characteristic_name} (index: {index}): {str(e)}")
+                logger.info(
+                    "Read value %d from %s (index: %s)",
+                    decval, characteristic_name, index,
+                )
+                return decval  # noqa: TRY300
+            except btle.BTLEException as e:  # noqa: PERF203
+                logger.warning(
+                    "Failed to read from %s (index: %s): %r",
+                    characteristic_name, index, e,
+                )
                 logger.info("Attempting to reconnect to Bluetooth device...")
                 dev, service = connect_bluetooth()  # Attempting reconnection
             except KeyError:
-                logger.error(f"Characteristic {characteristic_name} not found in UUID_DICT")
+                logger.exception(
+                    "Characteristic %s not found in UUID_DICT",
+                    characteristic_name,
+                )
                 return None
             except IndexError:
-                logger.error(f"Index {index} out of range for {characteristic_name}")
+                logger.exception("Index %s out of range for %s", index, characteristic_name)
                 return None
-            except Exception as e:
-                logger.error(f"An unexpected error occurred: {str(e)}")
+            except Exception:
+                logger.exception("An unexpected error occurred")
                 return None
 
-    logger.error(f"Unable to read from Bluetooth device after {MAX_RETRIES} attempts.")
+    logger.error("Unable to read from Bluetooth device after %d attempts.", MAX_RETRIES)
     return None
 
 
@@ -165,13 +246,22 @@ CORS(app)
 
 
 # Flask routes
-@app.route('/')
-def hello_world():
-    return 'This is my bed controller'
+@app.route("/")
+def hello_world() -> str:
+    """Return a simple message indicating the bed controller is running."""
+    return "This is my bed controller"
 
 
 @app.route("/stop")
-def set_stop():
+def set_stop() -> tuple:
+    """Stop both the lower and upper vibration motors of the bed.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to stop")
 
     success1 = write_bluetooth("lower vib", "00")
@@ -181,13 +271,20 @@ def set_stop():
     if success1 and success2:
         response = {"status": "success", "message": "Stopped successfully"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to stop"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to stop"}
+    return jsonify(response), 500
 
 
 @app.route("/flat")
-def set_flat():
+def set_flat() -> tuple:
+    """Set both the upper and lower parts of the bed to the flat (0%) position.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to set flat")
 
     # Get the current positions of the bed
@@ -202,25 +299,32 @@ def set_flat():
     hexval = hex(0)[2:].zfill(2)
 
     # Set the upper part to flat
-    success1 = write_bluetooth("upper lift", hexval,
-                               initial_percentage=upper_decval,
-                               target_percentage=0)
+    success1 = write_bluetooth(
+        "upper lift", hexval, initial_percentage=upper_decval, target_percentage=0,
+    )
 
     # Set the lower part to flat
-    success2 = write_bluetooth("lower lift", hexval,
-                               initial_percentage=lower_decval,
-                               target_percentage=0)
+    success2 = write_bluetooth(
+        "lower lift", hexval, initial_percentage=lower_decval, target_percentage=0,
+    )
 
     if success1 and success2:
         response = {"status": "success", "message": "Flat set successfully"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to set flat"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to set flat"}
+    return jsonify(response), 500
 
 
 @app.route("/zeroG")
-def set_zero_g():
+def set_zero_g() -> tuple:
+    """Set the bed to the zero G position by adjusting upper and lower lifts.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to set zero G")
 
     # Get the current positions of the bed
@@ -232,58 +336,82 @@ def set_zero_g():
         return jsonify(response), 500
 
     # Set the upper part to flat
-    success1 = write_bluetooth("upper lift", "46",
-                               initial_percentage=upper_decval,
-                               target_percentage=0)
+    success1 = write_bluetooth(
+        "upper lift", "46", initial_percentage=upper_decval, target_percentage=0,
+    )
 
     # Set the lower part to flat
-    success2 = write_bluetooth("lower lift", "1f",
-                               initial_percentage=lower_decval,
-                               target_percentage=0)
+    success2 = write_bluetooth(
+        "lower lift", "1f", initial_percentage=lower_decval, target_percentage=0,
+    )
 
     if success1 and success2:
         response = {"status": "success", "message": "Zero G set successfully"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to set zero G"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to set zero G"}
+    return jsonify(response), 500
 
 
 @app.route("/noSnore")
-def no_snore():
+def no_snore() -> tuple:
+    """Set the bed to the no snore position (11% upper lift).
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to set no snore (11%)")
 
     # Get the current position of the bed
     decval = read_bluetooth("upper lift")
-    logger.debug("Current upper height: " + str(decval))
+    logger.debug("Current upper height: %s", decval)
     if decval is None:
         response = {"status": "error", "message": "Failed to get current upper height"}
         return jsonify(response), 500
 
     # Write to Bluetooth with initial and target percentages
-    success = write_bluetooth("upper lift", "0b", initial_percentage=decval,
-                              target_percentage=11)
+    success = write_bluetooth(
+        "upper lift", "0b", initial_percentage=decval, target_percentage=11,
+    )
 
     if success:
-        response = {"status": "success", "message": f"No snore set successfully"}
+        response = {"status": "success", "message": "No snore set successfully"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to set no snore"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to set no snore"}
+    return jsonify(response), 500
 
 
 @app.route("/moveUpper/<percentage>")
-def move_upper(percentage):
-    logger.info(f"Received request to move upper with percentage: {percentage}")
+def move_upper(percentage: str) -> tuple:
+    """Move the upper part of the bed to the specified percentage position.
+
+    Parameters
+    ----------
+    percentage : str
+        The target position as a percentage (0-100).
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
+    logger.info("Received request to move upper with percentage: %s", percentage)
 
     # Input validation
     try:
         percentage_int = int(percentage)
-        if not (0 <= percentage_int <= 100):
-            raise ValueError("Percentage out of range")
+        if not (0 <= percentage_int <= 100):  # noqa: PLR2004
+            msg = "Percentage out of range"
+            raise ValueError(msg)  # noqa: TRY301
     except ValueError as e:
-        logger.error(f"Invalid percentage input: {percentage}. Error: {str(e)}")
-        response = {"status": "error", "message": f"Invalid percentage input: {percentage}"}
+        logger.exception("Invalid percentage input: %s. Error: %r", percentage, e)  # noqa: TRY401
+        response = {
+            "status": "error",
+            "message": f"Invalid percentage input: {percentage}",
+        }
         return jsonify(response), 400
 
     # Convert percentage to hex value and write to Bluetooth characteristic
@@ -291,25 +419,36 @@ def move_upper(percentage):
 
     # Get the current position of the bed
     decval = read_bluetooth("upper lift")
-    logger.debug("Current upper height: " + str(decval))
+    logger.debug("Current upper height: %s", decval)
     if decval is None:
         response = {"status": "error", "message": "Failed to get current upper height"}
         return jsonify(response), 500
 
     # Write to Bluetooth with initial and target percentages
-    success = write_bluetooth("upper lift", hexval, initial_percentage=decval,
-                              target_percentage=percentage_int)
+    success = write_bluetooth(
+        "upper lift",
+        hexval,
+        initial_percentage=decval,
+        target_percentage=percentage_int,
+    )
 
     if success:
         response = {"status": "success", "message": f"Moved upper to {percentage}%"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to move upper"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to move upper"}
+    return jsonify(response), 500
 
 
 @app.route("/getUpperHeight")
-def get_upper_height():
+def get_upper_height() -> tuple:
+    """Return the current upper height of the bed as a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to get upper height")
 
     decval = read_bluetooth("upper lift")
@@ -317,23 +456,39 @@ def get_upper_height():
     if decval is not None:
         response = {"status": "success", "upper_height": decval}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to get upper height"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to get upper height"}
+    return jsonify(response), 500
 
 
 @app.route("/moveLower/<percentage>")
-def move_lower(percentage):
-    logger.info(f"Received request to move lower with percentage: {percentage}")
+def move_lower(percentage: str) -> tuple:
+    """Move the lower part of the bed to the specified percentage position.
+
+    Parameters
+    ----------
+    percentage : str
+        The target position as a percentage (0-100).
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
+    logger.info("Received request to move lower with percentage: %s", percentage)
 
     # Input validation
     try:
         percentage_int = int(percentage)
-        if not (0 <= percentage_int <= 100):
-            raise ValueError("Percentage out of range")
+        if not (0 <= percentage_int <= 100):  # noqa: PLR2004
+            msg = "Percentage out of range"
+            raise ValueError(msg)  # noqa: TRY301
     except ValueError as e:
-        logger.error(f"Invalid percentage input: {percentage}. Error: {str(e)}")
-        response = {"status": "error", "message": f"Invalid percentage input: {percentage}"}
+        logger.exception("Invalid percentage input: %s. Error: %r", percentage, e)  # noqa: TRY401
+        response = {
+            "status": "error",
+            "message": f"Invalid percentage input: {percentage}",
+        }
         return jsonify(response), 400
 
     # Convert percentage to hex value and write to Bluetooth characteristic
@@ -341,26 +496,36 @@ def move_lower(percentage):
 
     # Get the current position of the bed
     decval = read_bluetooth("lower lift")
-    logger.debug("Current lower height: " + str(decval))
+    logger.debug("Current lower height: %s", decval)
     if decval is None:
         response = {"status": "error", "message": "Failed to get current lower height"}
         return jsonify(response), 500
 
     # Write to Bluetooth with initial and target percentages
-    success = write_bluetooth("lower lift", hexval, initial_percentage=decval,
-                              target_percentage=percentage_int)
+    success = write_bluetooth(
+        "lower lift",
+        hexval,
+        initial_percentage=decval,
+        target_percentage=percentage_int,
+    )
 
     if success:
         response = {"status": "success", "message": f"Moved lower to {percentage}%"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to move lower"}
-        return jsonify(response), 500
-
+    response = {"status": "error", "message": "Failed to move lower"}
+    return jsonify(response), 500
 
 
 @app.route("/getLowerHeight")
-def get_lower_height():
+def get_lower_height() -> tuple:
+    """Return the current lower height of the bed as a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to get lower height")
 
     decval = read_bluetooth("lower lift")
@@ -368,23 +533,39 @@ def get_lower_height():
     if decval is not None:
         response = {"status": "success", "lower_height": decval}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to get lower height"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to get lower height"}
+    return jsonify(response), 500
 
 
 @app.route("/setUpperVib/<percentage>")
-def set_upper_vib(percentage):
-    logger.info(f"Received request to set upper vib with percentage: {percentage}")
+def set_upper_vib(percentage: str) -> tuple:
+    """Set the upper vibration motor to the specified percentage.
+
+    Parameters
+    ----------
+    percentage : str
+        The target vibration intensity as a percentage (0-100).
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
+    logger.info("Received request to set upper vib with percentage: %s", percentage)
 
     # Input validation
     try:
         percentage_int = int(percentage)
-        if not (0 <= percentage_int <= 100):
-            raise ValueError("Percentage out of range")
+        if not (0 <= percentage_int <= 100):  # noqa: PLR2004
+            msg = "Percentage out of range"
+            raise ValueError(msg)  # noqa: TRY301
     except ValueError as e:
-        logger.error(f"Invalid percentage input: {percentage}. Error: {str(e)}")
-        response = {"status": "error", "message": f"Invalid percentage input: {percentage}"}
+        logger.exception("Invalid percentage input: %s. Error: %r", percentage, e)  # noqa: TRY401
+        response = {
+            "status": "error",
+            "message": f"Invalid percentage input: {percentage}",
+        }
         return jsonify(response), 400
 
     # Convert percentage to hex value and write to Bluetooth characteristic
@@ -394,13 +575,20 @@ def set_upper_vib(percentage):
     if success:
         response = {"status": "success", "message": f"Set upper vib to {percentage}%"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to set upper vib"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to set upper vib"}
+    return jsonify(response), 500
 
 
 @app.route("/getUpperVib")
-def get_upper_vib():
+def get_upper_vib() -> tuple:
+    """Return the current upper vibration value of the bed as a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to get upper vib")
 
     decval = read_bluetooth("upper vib")
@@ -408,23 +596,39 @@ def get_upper_vib():
     if decval is not None:
         response = {"status": "success", "upper_vib": decval}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to get upper vib"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to get upper vib"}
+    return jsonify(response), 500
 
 
 @app.route("/setLowerVib/<percentage>")
-def set_lower_vib(percentage):
-    logger.info(f"Received request to set lower vib with percentage: {percentage}")
+def set_lower_vib(percentage: str) -> tuple:
+    """Set the lower vibration motor to the specified percentage.
+
+    Parameters
+    ----------
+    percentage : str
+        The target vibration intensity as a percentage (0-100).
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
+    logger.info("Received request to set lower vib with percentage: %s", percentage)
 
     # Input validation
     try:
         percentage_int = int(percentage)
-        if not (0 <= percentage_int <= 100):
-            raise ValueError("Percentage out of range")
+        if not (0 <= percentage_int <= 100):  # noqa: PLR2004
+            msg = "Percentage out of range"
+            raise ValueError(msg)  # noqa: TRY301
     except ValueError as e:
-        logger.error(f"Invalid percentage input: {percentage}. Error: {str(e)}")
-        response = {"status": "error", "message": f"Invalid percentage input: {percentage}"}
+        logger.exception("Invalid percentage input: %s. Error: %s", percentage, e)  # noqa: TRY401
+        response = {
+            "status": "error",
+            "message": f"Invalid percentage input: {percentage}",
+        }
         return jsonify(response), 400
 
     # Convert percentage to hex value and write to Bluetooth characteristic
@@ -434,13 +638,20 @@ def set_lower_vib(percentage):
     if success:
         response = {"status": "success", "message": f"Set lower vib to {percentage}%"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to set lower vib"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to set lower vib"}
+    return jsonify(response), 500
 
 
 @app.route("/getLowerVib")
-def get_lower_vib():
+def get_lower_vib() -> tuple:
+    """Return the current lower vibration value of the bed as a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to get lower vib")
 
     decval = read_bluetooth("lower vib")
@@ -448,13 +659,20 @@ def get_lower_vib():
     if decval is not None:
         response = {"status": "success", "lower_vib": decval}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to get lower vib"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to get lower vib"}
+    return jsonify(response), 500
 
 
 @app.route("/light/on")
-def turn_light_on():
+def turn_light_on() -> tuple:
+    """Turn the Bluetooth-controlled light on and return a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to turn light on")
 
     # Hex value "64" to turn light on
@@ -463,13 +681,20 @@ def turn_light_on():
     if success:
         response = {"status": "success", "message": "Light turned on"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to turn light on"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to turn light on"}
+    return jsonify(response), 500
 
 
 @app.route("/light/off")
-def turn_light_off():
+def turn_light_off() -> tuple:
+    """Turn the Bluetooth-controlled light off and return a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to turn light off")
 
     # Hex value "00" to turn light off
@@ -478,13 +703,20 @@ def turn_light_off():
     if success:
         response = {"status": "success", "message": "Light turned off"}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to turn light off"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to turn light off"}
+    return jsonify(response), 500
 
 
 @app.route("/light/status")
-def read_light_status():
+def read_light_status() -> tuple:
+    """Return the current Bluetooth-controlled light status as a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to get light status")
 
     decval = read_bluetooth("light")
@@ -494,13 +726,20 @@ def read_light_status():
         light_status = "on" if decval != 0 else "off"
         response = {"status": "success", "light_status": light_status}
         return jsonify(response), 200
-    else:
-        response = {"status": "error", "message": "Failed to get light status"}
-        return jsonify(response), 500
+    response = {"status": "error", "message": "Failed to get light status"}
+    return jsonify(response), 500
 
 
 @app.route("/GPIOlight/on")
-def turn_gpio_light_on():
+def turn_gpio_light_on() -> tuple:
+    """Turn the GPIO-controlled light on and return a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to turn GPIO light on")
 
     try:
@@ -508,27 +747,43 @@ def turn_gpio_light_on():
         response = {"status": "success", "message": "GPIO light turned on"}
         return jsonify(response), 200
     except Exception as e:
-        logger.error(f"Failed to turn GPIO light on: {str(e)}")
+        logger.exception("Failed to turn GPIO light on: %s", e)  # noqa: TRY401
         response = {"status": "error", "message": "Failed to turn GPIO light on"}
         return jsonify(response), 500
 
 
 @app.route("/GPIOlight/off")
-def turn_gpio_light_off():
+def turn_gpio_light_off() -> tuple:
+    """Turn the GPIO-controlled light off and return a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to turn GPIO light off")
 
     try:
         GPIO.output(GPIO_PIN, GPIO.LOW)
         response = {"status": "success", "message": "GPIO light turned off"}
         return jsonify(response), 200
-    except Exception as e:
-        logger.error(f"Failed to turn GPIO light off: {str(e)}")
+    except Exception:
+        logger.exception("Failed to turn GPIO light off")
         response = {"status": "error", "message": "Failed to turn GPIO light off"}
         return jsonify(response), 500
 
 
 @app.route("/GPIOlight/status")
-def read_gpio_light_status():
+def read_gpio_light_status() -> tuple:
+    """Return the current GPIO-controlled light status as a JSON response.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the Flask JSON response and HTTP status code.
+
+    """
     logger.info("Received request to get GPIO light status")
 
     try:
@@ -538,18 +793,18 @@ def read_gpio_light_status():
         response = {"status": "success", "gpio_light_status": light_status_str}
         return jsonify(response), 200
     except Exception as e:
-        logger.error(f"Failed to get GPIO light status: {str(e)}")
+        logger.exception("Failed to get GPIO light status: %s", e)  # noqa: TRY401
         response = {"status": "error", "message": "Failed to get GPIO light status"}
         return jsonify(response), 500
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
         app.run(host=RPI_LOCAL_IP, port=8000, debug=False)
     except KeyboardInterrupt:
         logger.info("Gracefully shutting down due to manual interruption...")
-    except Exception as e:
-        logger.critical(f"Failed to start the Flask app: {str(e)}")
+    except Exception as e:  # noqa: BLE001
+        logger.critical("Failed to start the Flask app: %s", e)
     finally:
         GPIO.cleanup()
         # If applicable, consider closing the Bluetooth connection gracefully here
@@ -557,4 +812,4 @@ if __name__ == '__main__':
             dev.disconnect()
             logger.info("Bluetooth device disconnected successfully.")
         except Exception as e:
-            logger.error(f"Failed to disconnect Bluetooth device: {str(e)}")
+            logger.exception("Failed to disconnect Bluetooth device: %s", e)  # noqa: TRY401
