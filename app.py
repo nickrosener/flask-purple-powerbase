@@ -1,4 +1,5 @@
 """A Flask application to control a Bluetooth-enabled adjustable bed and GPIO light."""
+
 from __future__ import annotations
 
 import logging
@@ -6,6 +7,7 @@ import math
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from bluepy import btle  # type: ignore[import]
 from flask import Flask, jsonify  # type: ignore[import]
@@ -54,13 +56,18 @@ logger = logging.getLogger(__name__)
 # Apply the filter to Flask's Werkzeug logger
 logging.getLogger("werkzeug").addFilter(IgnoreFlaskLog())
 
+# Bluetooth devices
+BED_DEVICES = {
+    "nick": {"mac": "F8:68:CE:13:C3:DF", "dev": None, "service": None},
+    "britt": {"mac": "FA:7A:28:73:FF:3F", "dev": None, "service": None},
+}
 
 # Create a lock for Bluetooth communication
 bluetooth_lock = threading.Lock()
 
 
 # Function to connect to Bluetooth
-def connect_bluetooth() -> tuple:
+def connect_bluetooth(mac_address: str) -> tuple[btle.Peripheral, btle.Service]:
     """Attempt to connect to the Bluetooth device and return device / service objects.
 
     Returns
@@ -75,36 +82,33 @@ def connect_bluetooth() -> tuple:
 
     """
     for attempt in range(1, MAX_RETRIES + 1):
-        logger.debug("Bluetooth connection attempt %d/%d", attempt, MAX_RETRIES)
+        logger.debug("Bluetooth connection attempt %d/%d for %s", attempt, MAX_RETRIES, mac_address)
         try:
-            dev = btle.Peripheral(DEVICE_MAC, "random")
-            logger.info("Connected to Bluetooth device: %s", DEVICE_MAC)
+            dev = btle.Peripheral(mac_address, "random")
+            logger.info("Connected to Bluetooth device: %s", mac_address)
             service = dev.getServiceByUUID(DEVICE_UUID)
-            logger.info("Obtained service with UUID: %s", DEVICE_UUID)
         except btle.BTLEException as e:
-            logger.warning("Failed to connect to Bluetooth device. Retrying...: %r", e)
+            logger.warning("Failed to connect to %s. Retrying...: %r", mac_address, e)
             time.sleep(RETRY_DELAY)
         else:
             return dev, service
-    logger.error(
-        "Unable to connect to Bluetooth device after %d attempts.",
-        MAX_RETRIES,
-    )
+    logger.error("Unable to connect to Bluetooth device %s after %d attempts.", mac_address, MAX_RETRIES)
     sys.exit(1)
 
+# Initialize both devices on startup
+for name, entry in BED_DEVICES.items():
+    dev, service = connect_bluetooth(entry["mac"])
+    BED_DEVICES[name]["dev"] = dev
+    BED_DEVICES[name]["service"] = service
 
-# Attempt to connect to Bluetooth device
-dev, service = connect_bluetooth()
-
-
-def write_bluetooth(
+def write_bluetooth_all(
     characteristic_name: str,
     hex_value: str,
     index: int | None = None,
     initial_percentage: int = 0,
     target_percentage: int = 100,
-) -> bool:
-    """Write to a Bluetooth characteristic and handle potential issues.
+) -> dict[str, bool]:
+    """Write to a Bluetooth characteristic for all bed devices.
 
     Parameters
     ----------
@@ -119,105 +123,136 @@ def write_bluetooth(
     target_percentage : int
         Target position of the bed (0-100). Defaults to 100.
 
+    Returns
+    -------
+    dict
+        A dictionary with device names as keys and boolean success status as values.
+
     """
-    global dev, service  # ensure that you are using the global variables
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(BED_DEVICES)) as executor:
+        future_to_device = {
+            executor.submit(
+                write_bluetooth,
+                device_name,
+                characteristic_name,
+                hex_value,
+                index,
+                initial_percentage,
+                target_percentage,
+            ): device_name
+            for device_name in BED_DEVICES
+        }
+        for future in as_completed(future_to_device):
+            device_name = future_to_device[future]
+            try:
+                results[device_name] = future.result()
+            except Exception:
+                logger.exception("Exception occurred for %s", device_name)
+                results[device_name] = False
+    return results
+
+
+def write_bluetooth(  # noqa: PLR0913
+    device_name: str,
+    characteristic_name: str,
+    hex_value: str,
+    index: int | None = None,
+    initial_percentage: int = 0,
+    target_percentage: int = 100,
+) -> bool:
+    """Write to a Bluetooth characteristic and handle potential issues.
+
+    Parameters
+    ----------
+    device_name : str
+        The name of the bed device (e.g., "nick" or "britt").
+    characteristic_name : str
+        The name of the characteristic.
+    hex_value : str
+        The hex value to write.
+    index : int, optional
+        Index for characteristics. Defaults to None.
+    initial_percentage : int
+        Initial position of the bed (0-100). Defaults to 0.
+    target_percentage : int
+        Target position of the bed (0-100). Defaults to 100.
+
+    """
+    dev = BED_DEVICES[device_name]["dev"]
+    service = BED_DEVICES[device_name]["service"]
 
     # Calculate estimated time to move the bed
     max_time_to_move = 30  # max time to move bed from 0 to 100%
-    estimated_time = (
-        abs(target_percentage - initial_percentage) / 100.0 * max_time_to_move
-    )
+    estimated_time = abs(target_percentage - initial_percentage) / 100.0 * max_time_to_move
 
     # Characteristics that require waiting for movement to complete
     movement_characteristics = ["upper lift", "lower lift"]
 
-    with bluetooth_lock:  # Acquire the lock
+    with bluetooth_lock:
         for _ in range(MAX_RETRIES):
             try:
                 if index is not None:
-                    characteristic = service.getCharacteristics()[
-                        UUID_DICT[characteristic_name][index]
-                    ]
+                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name][index]]
                 else:
-                    characteristic = service.getCharacteristics()[
-                        UUID_DICT[characteristic_name]
-                    ]
+                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name]]
 
                 characteristic.write(bytes.fromhex(hex_value))
                 logger.info(
-                    "Wrote %s to %s (index: %s)",
-                    hex_value, characteristic_name, index,
+                    "[%s] Wrote %s to %s (index: %s)", device_name, hex_value, characteristic_name, index,
                 )
 
-                # Wait for the estimated time only for movement characteristics
                 if characteristic_name in movement_characteristics:
                     logger.info(
-                        "Waiting for %d seconds for the bed to reach the position...",
-                        math.ceil(estimated_time),
+                        "[%s] Waiting %d seconds for movement...", device_name, math.ceil(estimated_time),
                     )
                     time.sleep(estimated_time)
-
-                return True  # noqa: TRY300
             except btle.BTLEException as e:
-                logger.warning(
-                    "Failed to write %s to %s (index: %s): %r",
-                    hex_value, characteristic_name, index, e,
-                )
-                logger.info("Attempting to reconnect to Bluetooth device...")
-                dev, service = connect_bluetooth()  # Attempting reconnection
-            except KeyError:
-                logger.exception(
-                    "Characteristic %s not found in UUID_DICT",
-                    characteristic_name,
-                )
-                return False
-            except IndexError:
-                logger.exception(
-                    "Index %s out of range for %s",
-                    index,
-                    characteristic_name,
-                )
-                return False
+                logger.warning("[%s] Write failed. Reconnecting...: %r", device_name, e)
+                dev, service = connect_bluetooth(BED_DEVICES[device_name]["mac"])
+                BED_DEVICES[device_name]["dev"] = dev
+                BED_DEVICES[device_name]["service"] = service
             except Exception as e:
-                logger.exception("An unexpected error occurred: %r", e)  # noqa: TRY401
+                logger.exception("[%s] Unexpected error: %r", device_name, e)  # noqa: TRY401
                 return False
-
-        logger.error(
-            "Unable to write to Bluetooth device after %d attempts.",
-            MAX_RETRIES,
-        )
+            else:
+                return True
+        logger.error("[%s] Write failed after %d attempts", device_name, MAX_RETRIES)
         return False
 
 
-def read_bluetooth(characteristic_name: str, index: int | None = None) -> int | None:
+def read_bluetooth(device_name: str, characteristic_name: str, index: int | None = None) -> int | None:
     """Read a Bluetooth characteristic and handle potential issues."""
-    global dev, service  # Ensure that you are using the global variables
+    dev = BED_DEVICES[device_name]["dev"]
+    service = BED_DEVICES[device_name]["service"]
 
     with bluetooth_lock:  # Add this line to acquire the lock
         for _ in range(MAX_RETRIES):
             try:
                 if index is not None:
-                    characteristic = service.getCharacteristics()[
-                        UUID_DICT[characteristic_name][index]
-                    ]
+                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name][index]]
                 else:
-                    characteristic = service.getCharacteristics()[
-                        UUID_DICT[characteristic_name]
-                    ]
+                    characteristic = service.getCharacteristics()[UUID_DICT[characteristic_name]]
 
                 decval = int.from_bytes(characteristic.read(), byteorder=sys.byteorder)
                 logger.info(
                     "Read value %d from %s (index: %s)",
-                    decval, characteristic_name, index,
+                    decval,
+                    characteristic_name,
+                    index,
                 )
                 return decval  # noqa: TRY300
             except btle.BTLEException as e:
                 logger.warning(
                     "Failed to read from %s (index: %s): %r",
-                    characteristic_name, index, e,
+                    characteristic_name,
+                    index,
+                    e,
                 )
                 logger.info("Attempting to reconnect to Bluetooth device...")
-                dev, service = connect_bluetooth()  # Attempting reconnection
+                dev, service = connect_bluetooth(BED_DEVICES[device_name]["mac"])
+                BED_DEVICES[device_name]["dev"] = dev
+                BED_DEVICES[device_name]["service"] = service
             except KeyError:
                 logger.exception(
                     "Characteristic %s not found in UUID_DICT",
@@ -264,9 +299,9 @@ def set_stop() -> tuple:
     """
     logger.info("Received request to stop")
 
-    success1 = write_bluetooth("lower vib", "00")
+    success1 = write_bluetooth_all("lower vib", "00")
     time.sleep(1)  # Sleep between commands if needed
-    success2 = write_bluetooth("upper vib", "00")
+    success2 = write_bluetooth_all("upper vib", "00")
 
     if success1 and success2:
         response = {"status": "success", "message": "Stopped successfully"}
@@ -299,13 +334,19 @@ def set_flat() -> tuple:
     hexval = hex(0)[2:].zfill(2)
 
     # Set the upper part to flat
-    success1 = write_bluetooth(
-        "upper lift", hexval, initial_percentage=upper_decval, target_percentage=0,
+    success1 = write_bluetooth_all(
+        "upper lift",
+        hexval,
+        initial_percentage=upper_decval,
+        target_percentage=0,
     )
 
     # Set the lower part to flat
-    success2 = write_bluetooth(
-        "lower lift", hexval, initial_percentage=lower_decval, target_percentage=0,
+    success2 = write_bluetooth_all(
+        "lower lift",
+        hexval,
+        initial_percentage=lower_decval,
+        target_percentage=0,
     )
 
     if success1 and success2:
@@ -336,13 +377,19 @@ def set_zero_g() -> tuple:
         return jsonify(response), 500
 
     # Set the upper part to flat
-    success1 = write_bluetooth(
-        "upper lift", "46", initial_percentage=upper_decval, target_percentage=0,
+    success1 = write_bluetooth_all(
+        "upper lift",
+        "46",
+        initial_percentage=upper_decval,
+        target_percentage=0,
     )
 
     # Set the lower part to flat
-    success2 = write_bluetooth(
-        "lower lift", "1f", initial_percentage=lower_decval, target_percentage=0,
+    success2 = write_bluetooth_all(
+        "lower lift",
+        "1f",
+        initial_percentage=lower_decval,
+        target_percentage=0,
     )
 
     if success1 and success2:
@@ -372,8 +419,11 @@ def no_snore() -> tuple:
         return jsonify(response), 500
 
     # Write to Bluetooth with initial and target percentages
-    success = write_bluetooth(
-        "upper lift", "0b", initial_percentage=decval, target_percentage=11,
+    success = write_bluetooth_all(
+        "upper lift",
+        "0b",
+        initial_percentage=decval,
+        target_percentage=11,
     )
 
     if success:
@@ -385,7 +435,7 @@ def no_snore() -> tuple:
 
 @app.route("/moveUpper/<percentage>")
 def move_upper(percentage: str) -> tuple:
-    """Move the upper part of the bed to the specified percentage position.
+    """Move the upper part of all beds to the specified percentage position asynchronously.
 
     Parameters
     ----------
@@ -400,7 +450,6 @@ def move_upper(percentage: str) -> tuple:
     """
     logger.info("Received request to move upper with percentage: %s", percentage)
 
-    # Input validation
     try:
         percentage_int = int(percentage)
         if not (0 <= percentage_int <= 100):  # noqa: PLR2004
@@ -414,28 +463,48 @@ def move_upper(percentage: str) -> tuple:
         }
         return jsonify(response), 400
 
-    # Convert percentage to hex value and write to Bluetooth characteristic
     hexval = hex(percentage_int)[2:].zfill(2)
 
-    # Get the current position of the bed
-    decval = read_bluetooth("upper lift")
-    logger.debug("Current upper height: %s", decval)
-    if decval is None:
-        response = {"status": "error", "message": "Failed to get current upper height"}
-        return jsonify(response), 500
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(BED_DEVICES)) as executor:
+        future_to_device = {}
+        for device_name in BED_DEVICES:
+            initial_percentage = read_bluetooth(device_name, "upper lift")
+            if initial_percentage is None:
+                logger.warning("Could not read initial percentage for %s", device_name)
+                results[device_name] = False
+                continue
+            future = executor.submit(
+                write_bluetooth,
+                device_name,
+                "upper lift",
+                hexval,
+                None,
+                initial_percentage,
+                percentage_int,
+            )
+            future_to_device[future] = device_name
 
-    # Write to Bluetooth with initial and target percentages
-    success = write_bluetooth(
-        "upper lift",
-        hexval,
-        initial_percentage=decval,
-        target_percentage=percentage_int,
-    )
+        for future in as_completed(future_to_device):
+            device_name = future_to_device[future]
+            try:
+                results[device_name] = future.result()
+            except Exception:
+                logger.exception("Exception occurred for %s", device_name)
+                results[device_name] = False
 
-    if success:
-        response = {"status": "success", "message": f"Moved upper to {percentage}%"}
+    if all(results.values()):
+        response = {
+            "status": "success",
+            "message": f"Moved upper to {percentage}% for all devices",
+        }
         return jsonify(response), 200
-    response = {"status": "error", "message": "Failed to move upper"}
+
+    failed_devices = [k for k, v in results.items() if not v]
+    response = {
+        "status": "partial_error",
+        "message": f"Failed to move upper for: {', '.join(failed_devices)}",
+    }
     return jsonify(response), 500
 
 
@@ -502,7 +571,7 @@ def move_lower(percentage: str) -> tuple:
         return jsonify(response), 500
 
     # Write to Bluetooth with initial and target percentages
-    success = write_bluetooth(
+    success = write_bluetooth_all(
         "lower lift",
         hexval,
         initial_percentage=decval,
@@ -570,7 +639,7 @@ def set_upper_vib(percentage: str) -> tuple:
 
     # Convert percentage to hex value and write to Bluetooth characteristic
     hexval = hex(percentage_int)[2:].zfill(2)
-    success = write_bluetooth("upper vib", hexval)
+    success = write_bluetooth_all("upper vib", hexval)
 
     if success:
         response = {"status": "success", "message": f"Set upper vib to {percentage}%"}
@@ -633,7 +702,7 @@ def set_lower_vib(percentage: str) -> tuple:
 
     # Convert percentage to hex value and write to Bluetooth characteristic
     hexval = hex(percentage_int)[2:].zfill(2)
-    success = write_bluetooth("lower vib", hexval)
+    success = write_bluetooth_all("lower vib", hexval)
 
     if success:
         response = {"status": "success", "message": f"Set lower vib to {percentage}%"}
@@ -676,7 +745,7 @@ def turn_light_on() -> tuple:
     logger.info("Received request to turn light on")
 
     # Hex value "64" to turn light on
-    success = write_bluetooth("light", "64")
+    success = write_bluetooth_all("light", "64")
 
     if success:
         response = {"status": "success", "message": "Light turned on"}
@@ -698,7 +767,7 @@ def turn_light_off() -> tuple:
     logger.info("Received request to turn light off")
 
     # Hex value "00" to turn light off
-    success = write_bluetooth("light", "00")
+    success = write_bluetooth_all("light", "00")
 
     if success:
         response = {"status": "success", "message": "Light turned off"}
@@ -809,7 +878,9 @@ if __name__ == "__main__":
         GPIO.cleanup()
         # If applicable, consider closing the Bluetooth connection gracefully here
         try:
-            dev.disconnect()
-            logger.info("Bluetooth device disconnected successfully.")
+            for entry in BED_DEVICES.values():
+                if entry["dev"] is not None:
+                    entry["dev"].disconnect()
+            logger.info("Bluetooth devices disconnected successfully.")
         except Exception as e:
             logger.exception("Failed to disconnect Bluetooth device: %s", e)  # noqa: TRY401
