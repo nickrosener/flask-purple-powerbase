@@ -741,7 +741,7 @@ def get_lower_height() -> tuple:
     """
     logger.info("Received request to get lower height")
 
-    decval = read_bluetooth("lower lift")
+    decval = read_bluetooth("nick", "lower lift")
 
     if decval is not None:
         response = {"status": "success", "lower_height": decval}
