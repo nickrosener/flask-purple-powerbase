@@ -644,7 +644,8 @@ def get_upper_height() -> tuple:
     """
     logger.info("Received request to get upper height")
 
-    decval = read_bluetooth("upper lift")
+    # Only check the height of the "nick" bed side
+    decval = read_bluetooth("nick", "upper lift")
 
     if decval is not None:
         response = {"status": "success", "upper_height": decval}
