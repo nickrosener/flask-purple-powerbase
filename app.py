@@ -312,48 +312,81 @@ def set_stop() -> tuple:
 
 @app.route("/flat")
 def set_flat() -> tuple:
-    """Set both the upper and lower parts of the bed to the flat (0%) position.
-
-    Returns
-    -------
-    tuple
-        A tuple containing the Flask JSON response and HTTP status code.
-
-    """
+    """Set both the upper and lower parts of all beds to the flat (0%) position for all devices."""
     logger.info("Received request to set flat")
 
-    # Get the current positions of the bed
-    upper_decval = read_bluetooth("upper lift")
-    lower_decval = read_bluetooth("lower lift")
+    read_results: dict[str, dict[str, int | None]] = {}
 
-    if upper_decval is None or lower_decval is None:
-        response = {"status": "error", "message": "Failed to get current bed positions"}
+    # Step 1: Read upper and lower lift concurrently for all devices
+    with ThreadPoolExecutor(max_workers=len(BED_DEVICES) * 2) as executor:
+        read_futures = {
+            (device_name, lift): executor.submit(read_bluetooth, device_name, lift)
+            for device_name in BED_DEVICES
+            for lift in ["upper lift", "lower lift"]
+        }
+
+        for (device_name, lift), future in read_futures.items():
+            try:
+                result = future.result()
+                read_results.setdefault(device_name, {})[lift] = result
+            except Exception as e:
+                logger.exception("Error reading %s for %s: %s", lift, device_name, e)  # noqa: TRY401
+                read_results.setdefault(device_name, {})[lift] = None
+
+    # Step 2: Fail early if any required read failed
+    failed_reads = [
+        device_name
+        for device_name, values in read_results.items()
+        if values.get("upper lift") is None or values.get("lower lift") is None
+    ]
+    if failed_reads:
+        response = {
+            "status": "error",
+            "message": f"Failed to read current position for: {', '.join(failed_reads)}",
+        }
         return jsonify(response), 500
 
-    # Setting upper and lower both to 0
+    # Step 3: Write both upper and lower lift to 0% concurrently for all devices
     hexval = hex(0)[2:].zfill(2)
+    write_results: dict[str, bool] = dict.fromkeys(BED_DEVICES, True)
 
-    # Set the upper part to flat
-    success1 = write_bluetooth_all(
-        "upper lift",
-        hexval,
-        initial_percentage=upper_decval,
-        target_percentage=0,
-    )
+    with ThreadPoolExecutor(max_workers=len(BED_DEVICES) * 2) as executor:
+        write_futures = {
+            executor.submit(
+                write_bluetooth,
+                device_name,
+                lift,
+                hexval,
+                None,
+                read_results[device_name][lift],  # initial_percentage
+                0,  # target_percentage
+            ): (device_name, lift)
+            for device_name in BED_DEVICES
+            for lift in ["upper lift", "lower lift"]
+        }
 
-    # Set the lower part to flat
-    success2 = write_bluetooth_all(
-        "lower lift",
-        hexval,
-        initial_percentage=lower_decval,
-        target_percentage=0,
-    )
+        for future in as_completed(write_futures):
+            device_name, lift = write_futures[future]
+            try:
+                result = future.result()
+                if not result:
+                    logger.error("[%s] Failed to set %s to flat", device_name, lift)
+                    write_results[device_name] = False
+            except Exception as e:
+                logger.exception("[%s] Exception setting %s flat: %s", device_name, lift, e)  # noqa: TRY401
+                write_results[device_name] = False
 
-    if success1 and success2:
-        response = {"status": "success", "message": "Flat set successfully"}
+    if all(write_results.values()):
+        response = {"status": "success", "message": "Flat set successfully for all devices"}
         return jsonify(response), 200
-    response = {"status": "error", "message": "Failed to set flat"}
+
+    failed_devices = [name for name, success in write_results.items() if not success]
+    response = {
+        "status": "partial_error",
+        "message": f"Failed to set flat for: {', '.join(failed_devices)}",
+    }
     return jsonify(response), 500
+
 
 
 @app.route("/zeroG")
