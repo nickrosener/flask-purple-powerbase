@@ -503,7 +503,7 @@ def no_snore() -> tuple:
                 result = future.result()
                 read_results[device_name] = result
             except Exception as e:
-                logger.exception("Error reading upper lift for %s: %s", device_name, e)
+                logger.exception("Error reading upper lift for %s: %s", device_name, e)  # noqa: TRY401
                 read_results[device_name] = None
 
     # Step 2: Fail early if any reads failed
@@ -514,7 +514,7 @@ def no_snore() -> tuple:
                 {
                     "status": "error",
                     "message": f"Failed to read upper height for: {', '.join(failed_devices)}",
-                }
+                },
             ),
             500,
         )
@@ -542,7 +542,7 @@ def no_snore() -> tuple:
                 result = future.result()
                 write_results[device_name] = result
             except Exception as e:
-                logger.exception("Error writing no snore for %s: %s", device_name, e)
+                logger.exception("Error writing no snore for %s: %s", device_name, e)  # noqa: TRY401
                 write_results[device_name] = False
 
     if all(write_results.values()):
@@ -677,7 +677,7 @@ def move_lower(percentage: str) -> tuple:
             msg = "Percentage out of range"
             raise ValueError(msg)  # noqa: TRY301
     except ValueError as e:
-        logger.exception("Invalid percentage input: %s. Error: %r", percentage, e)
+        logger.exception("Invalid percentage input: %s. Error: %r", percentage, e)  # noqa: TRY401
         response = {
             "status": "error",
             "message": f"Invalid percentage input: {percentage}",
