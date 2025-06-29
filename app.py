@@ -391,7 +391,7 @@ def set_flat() -> tuple:
 
 @app.route("/zeroG")
 def set_zero_g() -> tuple:
-    """Set the bed to the zero G position by adjusting upper and lower lifts.
+    """Set all beds to the zero G position by adjusting upper and lower lifts.
 
     Returns
     -------
@@ -401,35 +401,82 @@ def set_zero_g() -> tuple:
     """
     logger.info("Received request to set zero G")
 
-    # Get the current positions of the bed
-    upper_decval = read_bluetooth("upper lift")
-    lower_decval = read_bluetooth("lower lift")
+    read_results: dict[str, dict[str, int | None]] = {}
 
-    if upper_decval is None or lower_decval is None:
-        response = {"status": "error", "message": "Failed to get current bed positions"}
-        return jsonify(response), 500
+    # Step 1: Read positions concurrently
+    with ThreadPoolExecutor(max_workers=len(BED_DEVICES) * 2) as executor:
+        read_futures = {
+            (device, lift): executor.submit(read_bluetooth, device, lift)
+            for device in BED_DEVICES
+            for lift in ["upper lift", "lower lift"]
+        }
 
-    # Set the upper part to flat
-    success1 = write_bluetooth_all(
-        "upper lift",
-        "46",
-        initial_percentage=upper_decval,
-        target_percentage=0,
+        for (device, lift), future in read_futures.items():
+            try:
+                result = future.result()
+                read_results.setdefault(device, {})[lift] = result
+            except Exception as e:
+                logger.exception("Error reading %s for %s: %s", lift, device, e)  # noqa: TRY401
+                read_results.setdefault(device, {})[lift] = None
+
+    # Fail fast if any read failed
+    failed_devices = [
+        device
+        for device, vals in read_results.items()
+        if vals.get("upper lift") is None or vals.get("lower lift") is None
+    ]
+    if failed_devices:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": f"Failed to read positions for: {', '.join(failed_devices)}",
+                },
+            ),
+            500,
+        )
+
+    # Step 2: Write target positions concurrently
+    write_results: dict[str, bool] = dict.fromkeys(BED_DEVICES, True)
+    with ThreadPoolExecutor(max_workers=len(BED_DEVICES) * 2) as executor:
+        write_futures = {
+            executor.submit(
+                write_bluetooth,
+                device,
+                lift,
+                hexval,
+                None,
+                read_results[device][lift],
+                0,
+            ): (device, lift)
+            for device in BED_DEVICES
+            for lift, hexval in [("upper lift", "46"), ("lower lift", "1f")]
+        }
+
+        for future in as_completed(write_futures):
+            device, lift = write_futures[future]
+            try:
+                result = future.result()
+                if not result:
+                    logger.error("[%s] Failed to set %s to zero G", device, lift)
+                    write_results[device] = False
+            except Exception as e:
+                logger.exception("[%s] Exception setting %s: %s", device, lift, e)  # noqa: TRY401
+                write_results[device] = False
+
+    if all(write_results.values()):
+        return jsonify({"status": "success", "message": "Zero G set successfully"}), 200
+
+    failed = [d for d, ok in write_results.items() if not ok]
+    return (
+        jsonify(
+            {
+                "status": "partial_error",
+                "message": f"Failed to set zero G for: {', '.join(failed)}",
+            },
+        ),
+        500,
     )
-
-    # Set the lower part to flat
-    success2 = write_bluetooth_all(
-        "lower lift",
-        "1f",
-        initial_percentage=lower_decval,
-        target_percentage=0,
-    )
-
-    if success1 and success2:
-        response = {"status": "success", "message": "Zero G set successfully"}
-        return jsonify(response), 200
-    response = {"status": "error", "message": "Failed to set zero G"}
-    return jsonify(response), 500
 
 
 @app.route("/noSnore")
