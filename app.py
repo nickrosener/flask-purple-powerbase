@@ -656,7 +656,7 @@ def get_upper_height() -> tuple:
 
 @app.route("/moveLower/<percentage>")
 def move_lower(percentage: str) -> tuple:
-    """Move the lower part of the bed to the specified percentage position.
+    """Move the lower part of all beds to the specified percentage position asynchronously.
 
     Parameters
     ----------
@@ -671,42 +671,61 @@ def move_lower(percentage: str) -> tuple:
     """
     logger.info("Received request to move lower with percentage: %s", percentage)
 
-    # Input validation
     try:
         percentage_int = int(percentage)
         if not (0 <= percentage_int <= 100):  # noqa: PLR2004
             msg = "Percentage out of range"
             raise ValueError(msg)  # noqa: TRY301
     except ValueError as e:
-        logger.exception("Invalid percentage input: %s. Error: %r", percentage, e)  # noqa: TRY401
+        logger.exception("Invalid percentage input: %s. Error: %r", percentage, e)
         response = {
             "status": "error",
             "message": f"Invalid percentage input: {percentage}",
         }
         return jsonify(response), 400
 
-    # Convert percentage to hex value and write to Bluetooth characteristic
     hexval = hex(percentage_int)[2:].zfill(2)
 
-    # Get the current position of the bed
-    decval = read_bluetooth("lower lift")
-    logger.debug("Current lower height: %s", decval)
-    if decval is None:
-        response = {"status": "error", "message": "Failed to get current lower height"}
-        return jsonify(response), 500
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(BED_DEVICES)) as executor:
+        future_to_device = {}
+        for device_name in BED_DEVICES:
+            initial_percentage = read_bluetooth(device_name, "lower lift")
+            if initial_percentage is None:
+                logger.warning("Could not read initial percentage for %s", device_name)
+                results[device_name] = False
+                continue
+            future = executor.submit(
+                write_bluetooth,
+                device_name,
+                "lower lift",
+                hexval,
+                None,
+                initial_percentage,
+                percentage_int,
+            )
+            future_to_device[future] = device_name
 
-    # Write to Bluetooth with initial and target percentages
-    success = write_bluetooth_all(
-        "lower lift",
-        hexval,
-        initial_percentage=decval,
-        target_percentage=percentage_int,
-    )
+        for future in as_completed(future_to_device):
+            device_name = future_to_device[future]
+            try:
+                results[device_name] = future.result()
+            except Exception:
+                logger.exception("Exception occurred for %s", device_name)
+                results[device_name] = False
 
-    if success:
-        response = {"status": "success", "message": f"Moved lower to {percentage}%"}
+    if all(results.values()):
+        response = {
+            "status": "success",
+            "message": f"Moved lower to {percentage}% for all devices",
+        }
         return jsonify(response), 200
-    response = {"status": "error", "message": "Failed to move lower"}
+
+    failed_devices = [k for k, v in results.items() if not v]
+    response = {
+        "status": "partial_error",
+        "message": f"Failed to move lower for: {', '.join(failed_devices)}",
+    }
     return jsonify(response), 500
 
 
