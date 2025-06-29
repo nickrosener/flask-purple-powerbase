@@ -491,25 +491,69 @@ def no_snore() -> tuple:
     """
     logger.info("Received request to set no snore (11%)")
 
-    # Get the current position of the bed
-    decval = read_bluetooth("upper lift")
-    logger.debug("Current upper height: %s", decval)
-    if decval is None:
-        response = {"status": "error", "message": "Failed to get current upper height"}
-        return jsonify(response), 500
+    # Step 1: Read current upper height concurrently
+    read_results: dict[str, int | None] = {}
+    with ThreadPoolExecutor(max_workers=len(BED_DEVICES)) as executor:
+        read_futures = {
+            device_name: executor.submit(read_bluetooth, device_name, "upper lift")
+            for device_name in BED_DEVICES
+        }
+        for device_name, future in read_futures.items():
+            try:
+                result = future.result()
+                read_results[device_name] = result
+            except Exception as e:
+                logger.exception("Error reading upper lift for %s: %s", device_name, e)
+                read_results[device_name] = None
 
-    # Write to Bluetooth with initial and target percentages
-    success = write_bluetooth_all(
-        "upper lift",
-        "0b",
-        initial_percentage=decval,
-        target_percentage=11,
-    )
+    # Step 2: Fail early if any reads failed
+    failed_devices = [name for name, val in read_results.items() if val is None]
+    if failed_devices:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": f"Failed to read upper height for: {', '.join(failed_devices)}",
+                }
+            ),
+            500,
+        )
 
-    if success:
+    # Step 3: Write no snore position concurrently
+    target_percentage = 11
+    hexval = hex(target_percentage)[2:].zfill(2)
+    write_results: dict[str, bool] = {}
+    with ThreadPoolExecutor(max_workers=len(BED_DEVICES)) as executor:
+        write_futures = {
+            executor.submit(
+                write_bluetooth,
+                device_name,
+                "upper lift",
+                hexval,
+                None,
+                read_results[device_name],
+                target_percentage,
+            ): device_name
+            for device_name in BED_DEVICES
+        }
+        for future in as_completed(write_futures):
+            device_name = write_futures[future]
+            try:
+                result = future.result()
+                write_results[device_name] = result
+            except Exception as e:
+                logger.exception("Error writing no snore for %s: %s", device_name, e)
+                write_results[device_name] = False
+
+    if all(write_results.values()):
         response = {"status": "success", "message": "No snore set successfully"}
         return jsonify(response), 200
-    response = {"status": "error", "message": "Failed to set no snore"}
+
+    failed = [d for d, ok in write_results.items() if not ok]
+    response = {
+        "status": "partial_error",
+        "message": f"Failed to set no snore for: {', '.join(failed)}",
+    }
     return jsonify(response), 500
 
 
