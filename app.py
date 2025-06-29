@@ -804,7 +804,7 @@ def get_upper_vib() -> tuple:
     """
     logger.info("Received request to get upper vib")
 
-    decval = read_bluetooth("upper vib")
+    decval = read_bluetooth("nick", "upper vib")
 
     if decval is not None:
         response = {"status": "success", "upper_vib": decval}
