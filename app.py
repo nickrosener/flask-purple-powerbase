@@ -932,7 +932,7 @@ def read_light_status() -> tuple:
     """
     logger.info("Received request to get light status")
 
-    decval = read_bluetooth("light")
+    decval = read_bluetooth("nick", "light")
 
     if decval is not None:
         # Consider non-zero as "on" and zero as "off"
